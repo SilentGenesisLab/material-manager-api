@@ -31,3 +31,11 @@ class RenameItemRequest(BaseModel):
     userId: str
     path: str
     newName: str
+
+
+class SetBaseUrlRequest(BaseModel):
+    baseUrl: str
+
+
+class BaseUrlResponse(BaseModel):
+    baseUrl: str

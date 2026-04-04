@@ -6,7 +6,7 @@ import aiofiles
 from fastapi import APIRouter, HTTPException, Query
 
 from app.config import settings
-from app.schemas import CreateItemRequest, FileContent, RenameItemRequest, TreeNode
+from app.schemas import BaseUrlResponse, CreateItemRequest, FileContent, RenameItemRequest, SetBaseUrlRequest, TreeNode
 from app.utils import (
     MAX_FILE_SIZE,
     get_language,
@@ -18,6 +18,33 @@ from app.utils import (
 )
 
 router = APIRouter(prefix="/api/materials", tags=["materials"])
+
+
+@router.get("/baseurl", response_model=BaseUrlResponse)
+async def get_base_url():
+    return BaseUrlResponse(baseUrl=settings.FILE_URL)
+
+
+@router.put("/baseurl", response_model=BaseUrlResponse)
+async def set_base_url(body: SetBaseUrlRequest):
+    new_path = Path(body.baseUrl).resolve()
+    new_path.mkdir(parents=True, exist_ok=True)
+    settings.FILE_URL = str(new_path)
+    # Persist to .env
+    env_path = Path(__file__).resolve().parent.parent / ".env"
+    lines = []
+    if env_path.exists():
+        lines = env_path.read_text(encoding="utf-8").splitlines()
+    updated = False
+    for i, line in enumerate(lines):
+        if line.startswith("FILE_URL="):
+            lines[i] = f"FILE_URL={new_path}"
+            updated = True
+            break
+    if not updated:
+        lines.append(f"FILE_URL={new_path}")
+    env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return BaseUrlResponse(baseUrl=settings.FILE_URL)
 
 
 def _build_tree(base: Path, rel: str = "") -> list[TreeNode]:
