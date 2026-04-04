@@ -1,0 +1,153 @@
+import os
+import shutil
+from pathlib import Path
+
+import aiofiles
+from fastapi import APIRouter, HTTPException, Query
+
+from app.config import settings
+from app.schemas import CreateItemRequest, FileContent, RenameItemRequest, TreeNode
+from app.utils import (
+    MAX_FILE_SIZE,
+    get_language,
+    is_binary,
+    is_hidden,
+    resolve_user_root,
+    validate_name_safe,
+    validate_path_safe,
+)
+
+router = APIRouter(prefix="/api/materials", tags=["materials"])
+
+
+def _build_tree(base: Path, rel: str = "") -> list[TreeNode]:
+    current = base / rel if rel else base
+    dirs: list[TreeNode] = []
+    files: list[TreeNode] = []
+
+    for entry in sorted(current.iterdir(), key=lambda e: e.name.lower()):
+        if is_hidden(entry.name):
+            continue
+        entry_rel = f"{rel}/{entry.name}".lstrip("/") if rel else entry.name
+        if entry.is_dir():
+            children = _build_tree(base, entry_rel)
+            dirs.append(TreeNode(name=entry.name, path=entry_rel, type="directory", children=children))
+        else:
+            files.append(TreeNode(name=entry.name, path=entry_rel, type="file", children=None))
+
+    return dirs + files
+
+
+@router.get("/tree", response_model=list[TreeNode])
+async def get_tree(userId: str = Query(...)):
+    root = resolve_user_root(settings.FILE_URL, userId)
+    if not root.exists():
+        root.mkdir(parents=True, exist_ok=True)
+        return []
+    return _build_tree(root)
+
+
+@router.get("/content", response_model=FileContent)
+async def get_content(userId: str = Query(...), path: str = Query(...)):
+    validate_path_safe(path)
+    root = resolve_user_root(settings.FILE_URL, userId)
+    file_path = (root / path).resolve()
+
+    # Ensure resolved path is under user root
+    if not str(file_path).startswith(str(root)):
+        raise HTTPException(status_code=400, detail="Invalid path")
+
+    if not file_path.exists() or not file_path.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+
+    name = file_path.name
+    size = file_path.stat().st_size
+
+    if is_binary(name):
+        return FileContent(
+            path=path, name=name, content="Binary file, cannot preview",
+            language=get_language(name), size=size,
+        )
+
+    if size > MAX_FILE_SIZE:
+        return FileContent(
+            path=path, name=name, content="File too large to preview (> 1MB)",
+            language=get_language(name), size=size,
+        )
+
+    async with aiofiles.open(file_path, "r", encoding="utf-8", errors="replace") as f:
+        content = await f.read()
+
+    return FileContent(
+        path=path, name=name, content=content,
+        language=get_language(name), size=size,
+    )
+
+
+@router.post("")
+async def create_item(body: CreateItemRequest):
+    validate_path_safe(body.parentPath)
+    validate_name_safe(body.name)
+
+    root = resolve_user_root(settings.FILE_URL, body.userId)
+    root.mkdir(parents=True, exist_ok=True)
+
+    parent = (root / body.parentPath).resolve() if body.parentPath else root
+    if not str(parent).startswith(str(root)):
+        raise HTTPException(status_code=400, detail="Invalid path")
+
+    target = parent / body.name
+
+    if target.exists():
+        raise HTTPException(status_code=409, detail="Item already exists")
+
+    if body.type == "directory":
+        target.mkdir(parents=True, exist_ok=True)
+    else:
+        parent.mkdir(parents=True, exist_ok=True)
+        target.touch()
+
+    return None
+
+
+@router.put("/rename")
+async def rename_item(body: RenameItemRequest):
+    validate_path_safe(body.path)
+    validate_name_safe(body.newName)
+
+    root = resolve_user_root(settings.FILE_URL, body.userId)
+    source = (root / body.path).resolve()
+
+    if not str(source).startswith(str(root)):
+        raise HTTPException(status_code=400, detail="Invalid path")
+
+    if not source.exists():
+        raise HTTPException(status_code=404, detail="Item not found")
+
+    destination = source.parent / body.newName
+
+    if destination.exists():
+        raise HTTPException(status_code=409, detail="An item with this name already exists")
+
+    source.rename(destination)
+    return None
+
+
+@router.delete("")
+async def delete_item(userId: str = Query(...), path: str = Query(...)):
+    validate_path_safe(path)
+    root = resolve_user_root(settings.FILE_URL, userId)
+    target = (root / path).resolve()
+
+    if not str(target).startswith(str(root)):
+        raise HTTPException(status_code=400, detail="Invalid path")
+
+    if not target.exists():
+        raise HTTPException(status_code=404, detail="Item not found")
+
+    if target.is_dir():
+        shutil.rmtree(target)
+    else:
+        target.unlink()
+
+    return None
