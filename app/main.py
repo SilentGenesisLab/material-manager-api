@@ -1,8 +1,9 @@
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from app.config import settings
 from app.routers import materials
@@ -11,7 +12,10 @@ from app.routers import materials
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Ensure base storage directory exists on startup
-    Path(settings.FILE_URL).resolve().mkdir(parents=True, exist_ok=True)
+    base = Path(settings.FILE_URL).resolve()
+    base.mkdir(parents=True, exist_ok=True)
+    # Mount static file serving for the storage directory
+    app.mount("/files", StaticFiles(directory=str(base)), name="static_files")
     yield
 
 

@@ -33,6 +33,12 @@ class RenameItemRequest(BaseModel):
     newName: str
 
 
+class SaveContentRequest(BaseModel):
+    userId: str
+    path: str
+    content: str
+
+
 class SetBaseUrlRequest(BaseModel):
     baseUrl: str
 

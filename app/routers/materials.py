@@ -1,12 +1,21 @@
 import os
 import shutil
 from pathlib import Path
+from urllib.parse import quote
 
 import aiofiles
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 
 from app.config import settings
-from app.schemas import BaseUrlResponse, CreateItemRequest, FileContent, RenameItemRequest, SetBaseUrlRequest, TreeNode
+from app.schemas import (
+    BaseUrlResponse,
+    CreateItemRequest,
+    FileContent,
+    RenameItemRequest,
+    SaveContentRequest,
+    SetBaseUrlRequest,
+    TreeNode,
+)
 from app.utils import (
     MAX_FILE_SIZE,
     get_language,
@@ -18,6 +27,12 @@ from app.utils import (
 )
 
 router = APIRouter(prefix="/api/materials", tags=["materials"])
+
+
+def _build_file_url(request: Request, user_id: str, rel_path: str) -> str:
+    """Build an external-accessible URL for a file under /files/{userId}/{path}."""
+    safe_path = quote(f"{user_id}/{rel_path}", safe="/")
+    return str(request.base_url).rstrip("/") + f"/files/{safe_path}"
 
 
 @router.get("/baseurl", response_model=BaseUrlResponse)
@@ -75,7 +90,7 @@ async def get_tree(userId: str = Query(...)):
 
 
 @router.get("/content", response_model=FileContent)
-async def get_content(userId: str = Query(...), path: str = Query(...)):
+async def get_content(request: Request, userId: str = Query(...), path: str = Query(...)):
     validate_path_safe(path)
     root = resolve_user_root(settings.FILE_URL, userId)
     file_path = (root / path).resolve()
@@ -91,14 +106,16 @@ async def get_content(userId: str = Query(...), path: str = Query(...)):
     size = file_path.stat().st_size
 
     if is_binary(name):
+        file_url = _build_file_url(request, userId, path)
         return FileContent(
-            path=path, name=name, content="Binary file, cannot preview",
+            path=path, name=name, content=file_url,
             language=get_language(name), size=size,
         )
 
     if size > MAX_FILE_SIZE:
+        file_url = _build_file_url(request, userId, path)
         return FileContent(
-            path=path, name=name, content="File too large to preview (> 1MB)",
+            path=path, name=name, content=file_url,
             language=get_language(name), size=size,
         )
 
@@ -109,6 +126,27 @@ async def get_content(userId: str = Query(...), path: str = Query(...)):
         path=path, name=name, content=content,
         language=get_language(name), size=size,
     )
+
+
+@router.put("/content")
+async def save_content(body: SaveContentRequest):
+    validate_path_safe(body.path)
+    root = resolve_user_root(settings.FILE_URL, body.userId)
+    file_path = (root / body.path).resolve()
+
+    if not str(file_path).startswith(str(root)):
+        raise HTTPException(status_code=400, detail="Invalid path")
+
+    if not file_path.exists() or not file_path.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+
+    if is_binary(file_path.name):
+        raise HTTPException(status_code=400, detail="Cannot edit binary files")
+
+    async with aiofiles.open(file_path, "w", encoding="utf-8") as f:
+        await f.write(body.content)
+
+    return None
 
 
 @router.post("")
