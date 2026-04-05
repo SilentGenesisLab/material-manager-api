@@ -5,7 +5,7 @@ from pathlib import Path
 from urllib.parse import quote, unquote
 
 import aiofiles
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
 
 from app.config import save_persistent_config, settings
 from app.schemas import (
@@ -234,6 +234,32 @@ async def save_content(body: SaveContentRequest):
 
     async with aiofiles.open(file_path, "w", encoding="utf-8") as f:
         await f.write(body.content)
+
+    return None
+
+
+@router.post("/upload")
+async def upload_file(
+    userId: str = Form(...),
+    parentPath: str = Form(""),
+    file: UploadFile = File(...),
+):
+    validate_path_safe(parentPath)
+    validate_name_safe(file.filename)
+
+    root = resolve_user_root(settings.FILE_URL, userId)
+    root.mkdir(parents=True, exist_ok=True)
+
+    parent = (root / parentPath).resolve() if parentPath else root
+    if not str(parent).startswith(str(root)):
+        raise HTTPException(status_code=400, detail="Invalid path")
+
+    parent.mkdir(parents=True, exist_ok=True)
+    target = parent / file.filename
+
+    async with aiofiles.open(target, "wb") as f:
+        while chunk := await file.read(1024 * 64):
+            await f.write(chunk)
 
     return None
 
