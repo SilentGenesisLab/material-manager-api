@@ -9,3 +9,4 @@ env/
 storage/
 .env
 *.log
+config/manager-config.json

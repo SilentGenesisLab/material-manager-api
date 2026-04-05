@@ -3,8 +3,8 @@ from pathlib import Path
 
 from pydantic_settings import BaseSettings
 
-# Persistent config file outside the repo — survives git pull / redeploy
-PERSISTENT_CONFIG_PATH = Path.home() / ".material-manager-config.json"
+# Persistent config inside repo: config/manager-config.json (gitignored)
+PERSISTENT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config" / "manager-config.json"
 
 
 class Settings(BaseSettings):
@@ -27,7 +27,8 @@ def _load_settings() -> Settings:
 
 
 def save_persistent_config(file_url: str) -> None:
-    """Persist FILE_URL to a file outside the repo."""
+    """Persist FILE_URL to config/manager-config.json."""
+    PERSISTENT_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     data = {}
     if PERSISTENT_CONFIG_PATH.exists():
         try:
