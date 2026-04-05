@@ -1,7 +1,8 @@
 import os
+import re
 import shutil
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 import aiofiles
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -11,6 +12,9 @@ from app.schemas import (
     BaseUrlResponse,
     CreateItemRequest,
     FileContent,
+    GraphEdge,
+    GraphNode,
+    GraphResponse,
     RenameItemRequest,
     SaveContentRequest,
     SetBaseUrlRequest,
@@ -74,6 +78,104 @@ async def get_tree(userId: str = Query(...)):
         root.mkdir(parents=True, exist_ok=True)
         return []
     return _build_tree(root)
+
+
+# ---- Knowledge Graph ----
+
+# Patterns: [text](path.md)  [text](./path.md)  [[wikilink]]  [[wikilink|alias]]
+_RE_MD_LINK = re.compile(r'\[(?:[^\]]*)\]\(([^)]+\.md)\)', re.IGNORECASE)
+_RE_WIKI_LINK = re.compile(r'\[\[([^|\]]+?)(?:\|[^\]]*?)?\]\]')
+
+
+def _collect_md_files(root: Path) -> dict[str, Path]:
+    """Return {relative_path: absolute_path} for all .md files under root."""
+    md_map: dict[str, Path] = {}
+    for p in root.rglob("*.md"):
+        if any(part.startswith(".") for part in p.relative_to(root).parts):
+            continue
+        rel = str(p.relative_to(root)).replace("\\", "/")
+        md_map[rel] = p
+    return md_map
+
+
+def _resolve_link(link: str, source_rel: str, md_set: set[str]) -> str | None:
+    """Resolve a link target to a known md relative path, or None."""
+    link = unquote(link).replace("\\", "/")
+    # Strip leading ./
+    if link.startswith("./"):
+        link = link[2:]
+    # Try relative to source file's directory
+    source_dir = str(Path(source_rel).parent).replace("\\", "/")
+    if source_dir == ".":
+        candidate = link
+    else:
+        candidate = f"{source_dir}/{link}"
+    if candidate in md_set:
+        return candidate
+    # Try as absolute (from root)
+    if link in md_set:
+        return link
+    return None
+
+
+def _resolve_wikilink(name: str, md_set: set[str]) -> str | None:
+    """Resolve [[name]] to a known md path by matching filename."""
+    target = name.strip().replace("\\", "/")
+    if not target.lower().endswith(".md"):
+        target += ".md"
+    # Exact match
+    if target in md_set:
+        return target
+    # Match by filename anywhere
+    for rel in md_set:
+        if rel.endswith("/" + target) or rel == target:
+            return rel
+        # Match without .md extension in the set
+        basename = rel.rsplit("/", 1)[-1]
+        if basename == target:
+            return rel
+    return None
+
+
+@router.get("/graph", response_model=GraphResponse)
+async def get_graph(userId: str = Query(...)):
+    root = resolve_user_root(settings.FILE_URL, userId)
+    if not root.exists():
+        root.mkdir(parents=True, exist_ok=True)
+        return GraphResponse(nodes=[], edges=[])
+
+    md_files = _collect_md_files(root)
+    md_set = set(md_files.keys())
+
+    nodes = [
+        GraphNode(id=rel, name=Path(rel).stem, type="file")
+        for rel in sorted(md_set)
+    ]
+
+    edges: list[GraphEdge] = []
+    seen_edges: set[tuple[str, str]] = set()
+
+    for rel, abs_path in md_files.items():
+        try:
+            text = abs_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+
+        # Standard markdown links [text](path.md)
+        for match in _RE_MD_LINK.finditer(text):
+            target = _resolve_link(match.group(1), rel, md_set)
+            if target and target != rel and (rel, target) not in seen_edges:
+                edges.append(GraphEdge(source=rel, target=target))
+                seen_edges.add((rel, target))
+
+        # Wiki-style links [[name]]
+        for match in _RE_WIKI_LINK.finditer(text):
+            target = _resolve_wikilink(match.group(1), md_set)
+            if target and target != rel and (rel, target) not in seen_edges:
+                edges.append(GraphEdge(source=rel, target=target))
+                seen_edges.add((rel, target))
+
+    return GraphResponse(nodes=nodes, edges=edges)
 
 
 @router.get("/content", response_model=FileContent)

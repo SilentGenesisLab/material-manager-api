@@ -39,6 +39,22 @@ class SaveContentRequest(BaseModel):
     content: str
 
 
+class GraphNode(BaseModel):
+    id: str
+    name: str
+    type: str = "file"
+
+
+class GraphEdge(BaseModel):
+    source: str
+    target: str
+
+
+class GraphResponse(BaseModel):
+    nodes: list[GraphNode]
+    edges: list[GraphEdge]
+
+
 class SetBaseUrlRequest(BaseModel):
     baseUrl: str
 
